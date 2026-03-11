@@ -1,45 +1,50 @@
 import { BEAT_MS, FIELD_SCALE } from './constants.js';
 import { fireSpin, fireAimedSpread } from './bullets.js';
 import type { FireContext } from './bullets.js';
+import type { JudgeLineDef } from './judgeLines.js';
 
-// ============================================================
-// 弾幕パターンの型定義
-// ============================================================
 export interface PatternDef {
-  label:      string;
-  intervalMs: number;
-  fire:       (ctx: FireContext) => void;
+  label:       string;
+  intervalMs:  number;
+  fire:        (ctx: FireContext) => void;
+  judgeLines?: JudgeLineDef[];
 }
 
 // 弾速プリセット — 東方 px/frame × 60 を BULLET_SCALE で補正
-const BULLET_SCALE = FIELD_SCALE * 1.2;                // ≈ 1.61
+const BULLET_SCALE = FIELD_SCALE * 2;
 const SPD_SLOW = Math.round(2 * 60 / BULLET_SCALE);   // ≈  75 px/sec
 const SPD_MED  = Math.round(4 * 60 / BULLET_SCALE);   // ≈ 149 px/sec
 const SPD_FAST = Math.round(7 * 60 / BULLET_SCALE);   // ≈ 261 px/sec
 
-// ============================================================
-// 弾幕パターン定義テーブル
-// 新パターンを追加するにはこの配列に要素を追加するだけでよい
-// ============================================================
+// 中心座標は常に画面中央に固定されるため、角度のみ補間する
+function gradientLines(
+  beats:  number[],
+  angles: [number, number],
+): JudgeLineDef[] {
+  const n = beats.length;
+  return beats.map((beatOffset, i) => {
+    const t = n > 1 ? i / (n - 1) : 0;
+    return {
+      beatOffset,
+      angle: angles[0] + (angles[1] - angles[0]) * t,
+    };
+  });
+}
+
 export const PATTERNS: PatternDef[] = [
   {
-    // ──────────────────────────────────────────────────────
-    // Pattern 0 : 回転水玉  (0.25 beat ごと)
-    //   count=16, Δ=7°/shot
-    //   見かけ上の 1 周 ≈ 360/7 ≈ 51 shot ≈ 5.9 秒
-    // ──────────────────────────────────────────────────────
     label:      'ROTATING RING',
-    intervalMs: 0.25 * BEAT_MS,
+    intervalMs: 0.5 * BEAT_MS,
     fire(ctx) {
       fireSpin(ctx, 16, ctx.shotAngle, SPD_MED, 0x4488ff);
       ctx.shotAngle += 7;
     },
+    judgeLines: gradientLines(
+      [10, 14, 18, 22, 26, 30],
+      [-25, 25],
+    ),
   },
   {
-    // ──────────────────────────────────────────────────────
-    // Pattern 1 : 桜花弁  (2 beat ごと)
-    //   外 12-way 低速 + 内 12-way 中速 + 3-way 高速狙い
-    // ──────────────────────────────────────────────────────
     label:      'SAKURA',
     intervalMs: 2 * BEAT_MS,
     fire(ctx) {
@@ -48,19 +53,23 @@ export const PATTERNS: PatternDef[] = [
       fireAimedSpread(ctx, 3, 10, SPD_FAST, 0xff2266);
       ctx.shotAngle += 7.5;
     },
+    judgeLines: gradientLines(
+      [7, 15, 23, 31],
+      [10, -10],
+    ),
   },
   {
-    // ──────────────────────────────────────────────────────
-    // Pattern 2 : 迷宮  (1 beat ごと)
-    //   16-way 中速 + 16-way 高速 (11.25° ずれ) + 3-way 狙い
-    // ──────────────────────────────────────────────────────
     label:      'MAZE',
-    intervalMs: 1 * BEAT_MS,
+    intervalMs: 2 * BEAT_MS,
     fire(ctx) {
-      fireSpin(ctx, 16, ctx.shotAngle,         SPD_MED,  0xffaa22);
-      fireSpin(ctx, 16, ctx.shotAngle + 11.25, SPD_FAST, 0xff6600);
+      fireSpin(ctx, 12, ctx.shotAngle,         SPD_MED,  0xffaa22);
+      fireSpin(ctx, 12, ctx.shotAngle + 11.25, SPD_FAST, 0xff6600);
       fireAimedSpread(ctx, 3, 20, SPD_MED, 0xffff44);
       ctx.shotAngle += 7.5;
     },
+    judgeLines: gradientLines(
+      [9, 10, 13, 14, 17, 18, 24, 28, 30],
+      [-35, 35],
+    ),
   },
 ];

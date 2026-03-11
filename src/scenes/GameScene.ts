@@ -3,14 +3,18 @@ import kuuUrl from '../assets/kuu.mp3';
 import { W, H, BPM, BEAT_MS, FIELD_SCALE } from '../constants.js';
 import { PATTERNS } from '../patterns.js';
 import type { FireContext } from '../bullets.js';
+import {
+  APPEAR_MS, FADE_MS, JUDGE_WINDOWS, JUDGE_SCORE,
+  DEFAULT_LINE_SPACING,
+  getRank, drawJudgeLine,
+} from '../judgeLines.js';
+import type { ActiveJudgeLine, JudgeRank } from '../judgeLines.js';
 
-// プレイヤー定数 — GameScene だけが使う
 const PLAYER_SPEED      = Math.round(4 * 60 / FIELD_SCALE); // ≈ 179 px/sec
 const PLAYER_SLOW_MULT  = 0.5;
 const PLAYER_HITBOX_R   = 2;    // 死亡判定半径 (px) — 東方準拠
 const PLAYER_INVINCIBLE = 2000; // 無敵時間 (ms)
 
-// パターンローテーション定数 — GameScene だけが使う
 const PHASE_BEATS       = 32;   // 32 beat = 8 小節
 const PHASE_DURATION_MS = PHASE_BEATS * BEAT_MS; // ≈ 14770 ms
 
@@ -22,81 +26,68 @@ interface Keys {
 }
 
 export class GameScene extends Phaser.Scene implements FireContext {
-  // ---- 星フィールド ----
   private stars:    Star[]                       = [];
   private starGfx!: Phaser.GameObjects.Graphics;
 
-  // ---- プレイヤー ----
   private player!:    Phaser.Physics.Arcade.Sprite;
   private hitboxGfx!: Phaser.GameObjects.Graphics;
 
-  // ---- ボス & 弾 ----
   private boss!:         Phaser.Physics.Arcade.Sprite;
   private enemyBullets!: Phaser.Physics.Arcade.Group;
 
-  // ---- 入力 ----
+  private judgeGfx!:        Phaser.GameObjects.Graphics;
+  private activeJudgeLines: ActiveJudgeLine[] = [];
+  private elapsedMs        = 0;  // ゲーム開始からの経過時間 (フェーズリセットに依存しない)
+
   private keys!: Keys;
 
-  // ---- HUD ----
   private scoreTxt!:   Phaser.GameObjects.Text;
   private livesTxt!:   Phaser.GameObjects.Text;
   private patternTxt!: Phaser.GameObjects.Text;
 
-  // ---- UI ----
   private startOverlay!: Phaser.GameObjects.Container;
   private bgm!:          Phaser.Sound.BaseSound;
 
-  // ---- ゲーム状態 ----
   private lives    = 3;
   private score    = 0;
   private gameOver = false;
   private started  = false;
 
-  // ---- パターン管理 ----
   private patternIndex = 0;
   private shotTimer    = 0;
   private phaseTimer   = 0;
   shotAngle            = 0;  // FireContext が要求するため public
 
-  // ---- 無敵 ----
   private invincible      = false;
   private invincibleTimer = 0;
 
-  // ================================================================
   // FireContext ゲッター (patterns / bullets モジュールが利用)
-  // ================================================================
   get bossX():       number                      { return this.boss.x; }
   get bossY():       number                      { return this.boss.y + 32; }
   get playerX():     number                      { return this.player.x; }
   get playerY():     number                      { return this.player.y; }
   get bulletGroup(): Phaser.Physics.Arcade.Group { return this.enemyBullets; }
 
-  // ================================================================
-
   constructor() {
     super({ key: 'GameScene' });
   }
 
-  // ----------------------------------------------------------------
-  // preload
-  // ----------------------------------------------------------------
   preload(): void {
     this.load.audio('bgm', kuuUrl);
   }
 
-  // ----------------------------------------------------------------
-  // create
-  // ----------------------------------------------------------------
   create(): void {
-    this.lives        = 3;
-    this.score        = 0;
-    this.gameOver     = false;
-    this.started      = false;
-    this.patternIndex = 0;
-    this.shotTimer    = 0;
-    this.phaseTimer   = 0;
-    this.shotAngle    = 0;
-    this.invincible   = false;
+    this.lives            = 3;
+    this.score            = 0;
+    this.gameOver         = false;
+    this.started          = false;
+    this.patternIndex     = 0;
+    this.shotTimer        = 0;
+    this.phaseTimer       = 0;
+    this.shotAngle        = 0;
+    this.invincible       = false;
+    this.elapsedMs        = 0;
+    this.activeJudgeLines = [];
 
     this._initTextures();
     this._createStarfield();
@@ -108,25 +99,21 @@ export class GameScene extends Phaser.Scene implements FireContext {
     this._createStartOverlay();
   }
 
-  // ----------------------------------------------------------------
-  // update
-  // ----------------------------------------------------------------
   update(_time: number, delta: number): void {
     this._updateStarfield();
     if (!this.started || this.gameOver) return;
 
+    this.elapsedMs += delta;
     this._handlePlayerMove();
     this._updateBoss(delta);
     this._handleCollisions();
     this._updateInvincible(delta);
     this._updateHitboxGfx();
+    this._updateJudgeLines();
     this._updateHUD();
     this._cullBullets();
   }
 
-  // ================================================================
-  // テクスチャ
-  // ================================================================
   private _initTextures(): void {
     if (!this.textures.exists('bullet_s')) {
       const g = this.add.graphics();
@@ -144,9 +131,6 @@ export class GameScene extends Phaser.Scene implements FireContext {
     }
   }
 
-  // ================================================================
-  // 星フィールド
-  // ================================================================
   private _createStarfield(): void {
     this.starGfx = this.add.graphics();
     this.stars = Array.from({ length: 100 }, () => ({
@@ -168,12 +152,8 @@ export class GameScene extends Phaser.Scene implements FireContext {
     }
   }
 
-  // ================================================================
-  // プレイヤー
-  // ================================================================
   private _createPlayer(): void {
     const gfx = this.add.graphics();
-    // 機体テクスチャ (32×40)
     gfx.fillStyle(0x44aaff);
     gfx.fillTriangle(16, 0, 0, 36, 32, 36);
     gfx.fillStyle(0x2266cc);
@@ -220,19 +200,13 @@ export class GameScene extends Phaser.Scene implements FireContext {
     }
   }
 
-  // ================================================================
-  // グループ
-  // ================================================================
   private _createGroups(): void {
     this.enemyBullets = this.physics.add.group({ maxSize: 1024 });
+    this.judgeGfx     = this.add.graphics().setDepth(6); // 弾 (depth 8) の下、星 (depth 0) の上
   }
 
-  // ================================================================
-  // ボス
-  // ================================================================
   private _createBoss(): void {
     const gfx = this.add.graphics();
-    // ボステクスチャ (64×64)
     gfx.fillStyle(0xcc3333);
     gfx.fillRect(8, 8, 48, 48);
     gfx.fillStyle(0xff8800); gfx.fillCircle(32, 32, 14);
@@ -263,12 +237,103 @@ export class GameScene extends Phaser.Scene implements FireContext {
       this.phaseTimer  -= PHASE_DURATION_MS;
       this.shotAngle    = 0;
       this.patternIndex = (this.patternIndex + 1) % PATTERNS.length;
+      this._spawnPhaseJudgeLines();
     }
   }
 
-  // ================================================================
-  // 衝突判定
-  // ================================================================
+  private _spawnPhaseJudgeLines(): void {
+    this.activeJudgeLines = [];
+    const defs = PATTERNS[this.patternIndex]?.judgeLines ?? [];
+    for (const def of defs) {
+      this.activeJudgeLines.push({
+        def,
+        perfectPhaseMs: def.beatOffset * BEAT_MS,
+        hit:            false,
+        resolved:       false,
+      });
+    }
+  }
+
+  private _updateJudgeLines(): void {
+    this.judgeGfx.clear();
+
+    this.activeJudgeLines = this.activeJudgeLines.filter((line) => {
+      if (line.resolved && line.resolvedElapsed !== undefined) {
+        if (this.elapsedMs - line.resolvedElapsed >= FADE_MS) return false;
+      }
+
+      const timeToLine = line.perfectPhaseMs - this.phaseTimer;
+      if (timeToLine > APPEAR_MS) return true;
+
+      // progress: 0=出現直後, 1=判定タイミング, >1=フェードアウト中
+      let progress: number;
+      if (line.resolved && line.resolvedElapsed !== undefined) {
+        progress = 1 + (this.elapsedMs - line.resolvedElapsed) / FADE_MS;
+      } else {
+        progress = (APPEAR_MS - timeToLine) / APPEAR_MS;
+      }
+
+      // rank: undefined=アプローチ中, JudgeRank=ヒット, null=ミス
+      const rank = line.resolved ? (line.hitRank ?? null) : undefined;
+      drawJudgeLine(this.judgeGfx, line.def, progress, W, H, rank);
+
+      if (!line.resolved) {
+        const delta   = this.phaseTimer - line.perfectPhaseMs;
+        const rad     = Phaser.Math.DegToRad(line.def.angle);
+        const spacing = line.def.lineSpacing ?? DEFAULT_LINE_SPACING;
+
+        // 符号付き垂直距離 — ラインを「通過」したとき bucket が変化する
+        const curr = -Math.sin(rad) * (this.playerX - W / 2)
+                   +  Math.cos(rad) * (this.playerY - H / 2);
+        const prev = line.prevSignedDist;
+        line.prevSignedDist = curr;
+
+        if (delta >= -JUDGE_WINDOWS.FAST && delta <= JUDGE_WINDOWS.LATE) {
+          if (prev !== undefined
+              && Math.floor(prev / spacing) !== Math.floor(curr / spacing)) {
+            const hitRank = getRank(delta)!;
+            line.hit             = true;
+            line.resolved        = true;
+            line.hitRank         = hitRank;
+            line.resolvedElapsed = this.elapsedMs;
+            this.score          += JUDGE_SCORE[hitRank];
+            this._showRankText(hitRank);
+          }
+        } else if (delta > JUDGE_WINDOWS.LATE) {
+          line.resolved        = true;
+          line.resolvedElapsed = this.elapsedMs;
+        }
+      }
+
+      return true;
+    });
+  }
+
+  private _showRankText(rank: JudgeRank): void {
+    const colors: Record<JudgeRank, string> = {
+      PERFECT: '#ffd700',
+      GREAT:   '#44ff88',
+      FAST:    '#4488ff',
+      LATE:    '#ff6644',
+    };
+    const txt = this.add.text(this.playerX, this.playerY - 36, rank, {
+      fontSize:        '20px',
+      color:           colors[rank],
+      stroke:          '#000000',
+      strokeThickness: 4,
+      fontStyle:       'bold',
+    }).setOrigin(0.5, 1).setDepth(25);
+
+    this.tweens.add({
+      targets:  txt,
+      y:        txt.y - 45,
+      alpha:    0,
+      duration: 700,
+      ease:     'Cubic.Out',
+      onComplete: () => txt.destroy(),
+    });
+  }
+
   private _handleCollisions(): void {
     if (this.invincible) return;
 
@@ -306,9 +371,6 @@ export class GameScene extends Phaser.Scene implements FireContext {
     this.input.keyboard!.once('keydown-R', () => this.scene.restart());
   }
 
-  // ================================================================
-  // 無敵時間
-  // ================================================================
   private _updateInvincible(delta: number): void {
     if (!this.invincible) return;
     this.invincibleTimer -= delta;
@@ -318,9 +380,6 @@ export class GameScene extends Phaser.Scene implements FireContext {
     }
   }
 
-  // ================================================================
-  // 画面外弾を削除
-  // ================================================================
   private _cullBullets(): void {
     this.enemyBullets.getChildren().forEach((b) => {
       const s = b as Phaser.Physics.Arcade.Sprite;
@@ -331,15 +390,12 @@ export class GameScene extends Phaser.Scene implements FireContext {
     });
   }
 
-  // ================================================================
-  // HUD
-  // ================================================================
   private _createHUD(): void {
     const style: Phaser.Types.GameObjects.Text.TextStyle = {
       fontSize: '16px', color: '#ffffff', stroke: '#000', strokeThickness: 3,
     };
-    this.scoreTxt   = this.add.text(8, 8,  'SCORE: 0',              style).setDepth(30);
-    this.livesTxt   = this.add.text(8, 28, 'LIVES: ♥♥♥',           style).setDepth(30);
+    this.scoreTxt   = this.add.text(8, 8,  'SCORE: 0',     style).setDepth(30);
+    this.livesTxt   = this.add.text(8, 28, 'LIVES: ♥♥♥',  style).setDepth(30);
     this.patternTxt = this.add.text(W / 2, H - 20, PATTERNS[0]!.label, {
       fontSize: '12px', color: '#aaaaff', stroke: '#000', strokeThickness: 2,
     }).setOrigin(0.5, 1).setDepth(30);
@@ -353,9 +409,6 @@ export class GameScene extends Phaser.Scene implements FireContext {
     this.patternTxt.setText(PATTERNS[this.patternIndex]!.label);
   }
 
-  // ================================================================
-  // キー設定
-  // ================================================================
   private _createKeys(): void {
     const kb = this.input.keyboard!;
     this.keys = {
@@ -372,9 +425,6 @@ export class GameScene extends Phaser.Scene implements FireContext {
     ).setOrigin(1, 0).setDepth(30);
   }
 
-  // ================================================================
-  // スタートオーバーレイ
-  // ================================================================
   private _createStartOverlay(): void {
     const bg = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.75);
 
@@ -407,6 +457,8 @@ export class GameScene extends Phaser.Scene implements FireContext {
     if (this.started) return;
     this.started = true;
     this.startOverlay.destroy();
+
+    this._spawnPhaseJudgeLines();
 
     this.bgm = this.sound.add('bgm', { loop: true });
     this.bgm.play();
