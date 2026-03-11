@@ -46,7 +46,7 @@ export class GameScene extends Phaser.Scene implements FireContext {
   private patternTxt!: Phaser.GameObjects.Text;
 
   private startOverlay!: Phaser.GameObjects.Container;
-  private bgm!:          Phaser.Sound.BaseSound;
+  private bgm?: Phaser.Sound.BaseSound;
 
   private lives    = 3;
   private score    = 0;
@@ -362,7 +362,7 @@ export class GameScene extends Phaser.Scene implements FireContext {
 
   private _endGame(): void {
     this.gameOver = true;
-    this.bgm.stop();
+    this.bgm?.stop();
     this.add.text(W / 2, H / 2, 'GAME OVER', {
       fontSize: '40px', color: '#ff4444',
       stroke: '#000', strokeThickness: 5,
@@ -460,7 +460,9 @@ export class GameScene extends Phaser.Scene implements FireContext {
 
     this._spawnPhaseJudgeLines();
 
-    this.bgm = this.sound.add('bgm', { loop: true });
-    this.bgm.play();
+    if (this.cache.audio.exists('bgm')) {
+      this.bgm = this.sound.add('bgm', { loop: true });
+      this.bgm.play();
+    }
   }
 }
